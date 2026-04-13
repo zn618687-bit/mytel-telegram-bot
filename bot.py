@@ -1,6 +1,7 @@
 import logging
 import re
 import os
+import asyncio
 
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, CommandHandler, CallbackQueryHandler, MessageHandler, filters
@@ -96,8 +97,19 @@ async def receive_otp_code(update: Update, context) -> None:
 
         try:
             validate_response = await validate_otp(phone_number, otp_code)
+            logger.info(f"OTP Validation Response: {validate_response}")
+            
             if validate_response and validate_response.get("errorCode") == 200:
-                access_token = validate_response["result"]["access_token"]
+                # Handle both cases: with and without result key
+                if "result" in validate_response and "access_token" in validate_response["result"]:
+                    access_token = validate_response["result"]["access_token"]
+                elif "access_token" in validate_response:
+                    access_token = validate_response["access_token"]
+                else:
+                    logger.error(f"No access_token in OTP response: {validate_response}")
+                    await update.message.reply_text(MESSAGES["invalid_otp"], reply_markup=cancel_keyboard())
+                    return
+                
                 context.user_data["new_account_phone"] = phone_number
                 context.user_data["new_account_token"] = access_token
                 await update.message.reply_text(MESSAGES["otp_login_success"])
@@ -105,9 +117,10 @@ async def receive_otp_code(update: Update, context) -> None:
                 await set_user_state(user_id, "WAITING_FOR_ALIAS")
             else:
                 logger.error(f"OTP validation failed for {phone_number} with OTP {otp_code}: {validate_response}")
-                await update.message.reply_text(MESSAGES["invalid_otp"], reply_markup=cancel_keyboard())
+                error_msg = validate_response.get("message", MESSAGES["invalid_otp"]) if validate_response else MESSAGES["invalid_otp"]
+                await update.message.reply_text(error_msg, reply_markup=cancel_keyboard())
         except Exception as e:
-            logger.error(f"Error validating OTP for {phone_number}: {e}")
+            logger.error(f"Error validating OTP for {phone_number}: {e}", exc_info=True)
             await update.message.reply_text(MESSAGES["something_went_wrong"], reply_markup=back_to_main_menu_keyboard())
             await delete_user_state(user_id)
     else:
