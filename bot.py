@@ -260,14 +260,10 @@ async def manage_accounts_list(update: Update, context) -> None:
         await query.edit_message_text(format_premium_msg(MESSAGES["no_accounts"], "⚠️"), parse_mode=ParseMode.HTML, reply_markup=back_to_main_menu_keyboard())
         return
 
-    # Add Claim Game Turns Button to Account List
-    keyboard = account_list_keyboard(accounts)
-    keyboard.inline_keyboard.insert(0, [InlineKeyboardButton("🎮 Claim All Free Turns", callback_query_data="claim_all_turns")])
-
     await query.edit_message_text(
         format_premium_msg(MESSAGES["your_accounts"], "📡"),
         parse_mode=ParseMode.HTML,
-        reply_markup=keyboard
+        reply_markup=account_list_keyboard(accounts)
     )
 
 async def claim_all_turns(update: Update, context) -> None:

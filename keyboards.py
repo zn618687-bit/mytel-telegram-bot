@@ -24,9 +24,13 @@ def back_to_main_menu_keyboard():
 
 def account_list_keyboard(accounts):
     keyboard = []
+    # Add Claim Game Turns Button at the top
+    keyboard.append([InlineKeyboardButton("🎮 Claim All Free Turns", callback_data="claim_all_turns")])
+    
     for acc_id, phone, alias, _ in accounts:
         display_name = alias if alias else phone
         keyboard.append([InlineKeyboardButton(display_name, callback_data=f"select_account_{acc_id}")])
+    
     keyboard.append([InlineKeyboardButton(MESSAGES["add_new_account_button"], callback_data="add_account")])
     keyboard.append([InlineKeyboardButton(MESSAGES["back_to_main_menu_button"], callback_data="main_menu")])
     return InlineKeyboardMarkup(keyboard)
