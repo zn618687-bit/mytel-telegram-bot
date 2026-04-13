@@ -8,79 +8,83 @@ logger = logging.getLogger(__name__)
 
 class MytelProAPI:
     def __init__(self):
+        # Professional Headers for Mytel/MyID
         self.headers = {
-            "User-Agent": "MytelApp/1.0.93 (Android; 13; Build/TP1A.220624.014; en_US)",
             "Accept": "application/json",
             "Content-Type": "application/json",
+            "User-Agent": "Dalvik/2.1.0 (Linux; U; Android 7.1.2; Pixel 4 Build/RQ3A.211001.001)",
+            "Accept-Encoding": "gzip, deflate",
             "Connection": "keep-alive"
         }
-        self.timeout = aiohttp.ClientTimeout(total=15)
+        self.timeout = aiohttp.ClientTimeout(total=20)
+        self.loyalty_url = "https://apis.mytel.com.mm/loyalty/v2.0/api/pack/j4u?phoneNo={phone}"
+        self.game_profile_url = "https://pubapi-mygov2.mtgmm.co/v1/engine/user/profile"
 
-    async def _make_request(self, method, url, **kwargs):
-        """Internal helper for standardized API requests."""
+    async def _make_request(self, method, url, headers=None, **kwargs):
+        """Standardized async request handler with robust error handling."""
+        req_headers = headers if headers else self.headers
         try:
-            async with aiohttp.ClientSession(headers=self.headers, timeout=self.timeout) as session:
+            async with aiohttp.ClientSession(headers=req_headers, timeout=self.timeout) as session:
                 async with session.request(method, url, **kwargs) as response:
-                    status_code = response.status
+                    status = response.status
                     try:
                         data = await response.json()
                     except:
                         data = await response.text()
 
-                    if status_code == 200:
-                        # Mytel specific logic: check errorCode inside JSON
-                        if isinstance(data, dict) and data.get("errorCode") in [0, 200]:
-                            return {"status": "success", "message": "Operation successful", "data": data}
-                        else:
-                            msg = data.get("message") if isinstance(data, dict) else "API error"
-                            return {"status": "error", "message": msg, "data": data}
-                    elif status_code == 401:
-                        return {"status": "error", "message": "Unauthorized: Token expired", "data": None}
+                    if status == 200:
+                        # Standardize Mytel's mixed error codes
+                        if isinstance(data, dict):
+                            err_code = data.get("errorCode")
+                            if err_code in [0, 200, "0", "200"]:
+                                return {"status": "success", "message": "OK", "data": data}
+                            return {"status": "error", "message": data.get("message", "API Error"), "data": data}
+                        return {"status": "success", "message": "OK", "data": data}
+                    elif status == 401:
+                        return {"status": "error", "message": "Unauthorized/Expired", "data": None}
                     else:
-                        return {"status": "error", "message": f"Server error ({status_code})", "data": data}
+                        return {"status": "error", "message": f"Server Error ({status})", "data": data}
         except asyncio.TimeoutError:
-            return {"status": "error", "message": "Network timeout. Please try again.", "data": None}
+            return {"status": "error", "message": "Network Timeout", "data": None}
         except Exception as e:
-            logger.error(f"API Request Exception: {str(e)}")
-            return {"status": "error", "message": "Connection failed.", "data": str(e)}
+            logger.error(f"API Exception at {url}: {e}")
+            return {"status": "error", "message": "Connection Failed", "data": str(e)}
 
-    async def send_otp(self, phone_number):
-        """⚡ Request OTP from Mytel server."""
-        url = MYTEL_OTP_REQUEST_URL.format(phone=phone_number)
-        return await self._make_request("GET", url)
+    async def send_otp(self, phone):
+        """⚡ Request OTP."""
+        return await self._make_request("GET", MYTEL_OTP_REQUEST_URL.format(phone=phone))
 
-    async def validate_otp(self, phone_number, otp):
-        """🛡️ Validate OTP and retrieve access token."""
-        url = MYTEL_OTP_VALIDATE_URL
+    async def validate_otp(self, phone, otp):
+        """🛡️ Validate OTP and get Token."""
         payload = {
-            "phoneNumber": phone_number,
-            "password": otp,
-            "appVersion": "1.0.93",
-            "buildVersionApp": "217",
-            "deviceId": "0",
-            "imei": "0",
-            "os": "Android",
-            "osAp": "android",
-            "version": "1.2"
+            "phoneNumber": phone, "password": otp, "appVersion": "1.0.93",
+            "buildVersionApp": "217", "deviceId": "0", "imei": "0",
+            "os": "Android", "osAp": "android", "version": "1.2"
         }
-        return await self._make_request("POST", url, json=payload)
+        return await self._make_request("POST", MYTEL_OTP_VALIDATE_URL, json=payload)
 
-    async def get_balance(self, token, isdn):
-        """💰 Fetch balance details for the given ISDN."""
-        url = MYTEL_BALANCE_URL.format(isdn=isdn)
+    async def get_balance(self, token, phone):
+        """💰 Get Balance, Data, and Points."""
         headers = {**self.headers, "Authorization": f"Bearer {token}"}
         
-        # Override headers locally for this request to include Bearer token
-        try:
-            async with aiohttp.ClientSession(headers=headers, timeout=self.timeout) as session:
-                async with session.get(url) as response:
-                    if response.status == 200:
-                        data = await response.json()
-                        if data.get("errorCode") == 0:
-                            return {"status": "success", "message": "Balance retrieved", "data": data}
-                        return {"status": "error", "message": data.get("message", "Balance error"), "data": data}
-                    elif response.status == 401:
-                        return {"status": "error", "message": "Token expired", "data": None}
-                    return {"status": "error", "message": f"Server error ({response.status})", "data": None}
-        except Exception as e:
-            return {"status": "error", "message": "Connection failed", "data": str(e)}
+        # 1. Main Balance & Data
+        balance_res = await self._make_request("GET", MYTEL_BALANCE_URL.format(isdn=phone), headers=headers)
+        
+        # 2. Loyalty Points
+        points = "0"
+        points_res = await self._make_request("GET", self.loyalty_url.format(phone=phone), headers=headers)
+        if points_res["status"] == "success":
+            try:
+                points = points_res["data"]["result"]["loyalty_point"]
+            except: pass
+
+        if balance_res["status"] == "success":
+            balance_res["points"] = points
+            return balance_res
+        return balance_res
+
+    async def claim_game_turns(self, token):
+        """🎮 Daily 2 Free Turns Claim (Hit Game Profile API)."""
+        headers = {**self.headers, "Authorization": f"Bearer {token}"}
+        # Calling the profile API usually triggers daily turn allocation
+        return await self._make_request("GET", self.game_profile_url, headers=headers)

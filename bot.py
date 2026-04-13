@@ -20,7 +20,7 @@ app = Flask(__name__)
 
 @app.route('/')
 def home():
-    return "⚡ Mytel Multi-Account Bot is Online!"
+    return "⚡ Mytel Multi-Account Bot Final Version is Online!"
 
 def run_flask():
     port = int(os.environ.get("PORT", 8080))
@@ -39,7 +39,7 @@ api = MytelProAPI()
 def format_premium_msg(text, icon="⚡"):
     return f"<b>{icon} SYSTEM:</b>\n\n{text}"
 
-def format_balance_pro(phone, data):
+def format_balance_pro(phone, data, points="0"):
     """Professional balance formatting."""
     try:
         res = data["result"][0]["mainBalance"]
@@ -52,12 +52,14 @@ def format_balance_pro(phone, data):
         msg = (
             f"📡 <b>NETWORK STATUS: {phone}</b>\n"
             f"━━━━━━━━━━━━━━━━━━━━\n"
-            f"💰 <b>MAIN:</b> {main:,} Ks\n"
-            f"🎁 <b>PROMO:</b> {promo:,} Ks\n"
+            f"👤 <b>ACCOUNT:</b> <code>{phone}</code>\n"
+            f"💰 <b>MAIN:</b> {main:,} MMK\n"
+            f"🎁 <b>PROMO:</b> {promo:,} MMK\n"
             f"📞 <b>VOICE:</b> {voice:,} min\n"
             f"🌐 <b>DATA:</b> {data_amt:,} MB\n"
+            f"💎 <b>POINTS:</b> {points}\n"
             f"━━━━━━━━━━━━━━━━━━━━\n"
-            f"🛡️ <b>TOTAL BALANCE:</b> <u>{total:,} Ks</u>"
+            f"🛡️ <b>TOTAL BALANCE:</b> <u>{total:,} MMK</u>"
         )
         return msg
     except Exception as e:
@@ -231,14 +233,15 @@ async def check_balance_all(update: Update, context) -> None:
         await query.edit_message_text(format_premium_msg(MESSAGES["no_accounts"], "⚠️"), parse_mode=ParseMode.HTML, reply_markup=back_to_main_menu_keyboard())
         return
 
-    await query.edit_message_text("📡 <i>Retrieving Multi-Account Balance...</i>", parse_mode=ParseMode.HTML)
+    await query.edit_message_text("📡 <i>Retrieving Multi-Account Data...</i>", parse_mode=ParseMode.HTML)
     
     response_messages = []
     for acc_id, phone, alias, token in accounts:
         response = await api.get_balance(token, phone)
         if response["status"] == "success":
-            response_messages.append(format_balance_pro(alias if alias else phone, response["data"]))
-        elif response["message"] == "Token expired":
+            points = response.get("points", "0")
+            response_messages.append(format_balance_pro(alias if alias else phone, response["data"], points))
+        elif response["message"] == "Unauthorized/Expired":
             await delete_account(acc_id, user_id)
             response_messages.append(f"❌ <b>{phone}:</b> Token Expired (Auto-Removed)")
         else:
@@ -257,10 +260,38 @@ async def manage_accounts_list(update: Update, context) -> None:
         await query.edit_message_text(format_premium_msg(MESSAGES["no_accounts"], "⚠️"), parse_mode=ParseMode.HTML, reply_markup=back_to_main_menu_keyboard())
         return
 
+    # Add Claim Game Turns Button to Account List
+    keyboard = account_list_keyboard(accounts)
+    keyboard.inline_keyboard.insert(0, [InlineKeyboardButton("🎮 Claim All Free Turns", callback_query_data="claim_all_turns")])
+
     await query.edit_message_text(
         format_premium_msg(MESSAGES["your_accounts"], "📡"),
         parse_mode=ParseMode.HTML,
-        reply_markup=account_list_keyboard(accounts)
+        reply_markup=keyboard
+    )
+
+async def claim_all_turns(update: Update, context) -> None:
+    """🎮 Auto-Claim Free Turns for all accounts."""
+    query = update.callback_query
+    await query.answer()
+    user_id = query.from_user.id
+    accounts = await get_accounts(user_id)
+    
+    if not accounts: return
+
+    await query.edit_message_text("🎮 <i>Scanning Game Engine for Free Turns...</i>", parse_mode=ParseMode.HTML)
+    
+    success_count = 0
+    for _, _, _, token in accounts:
+        res = await api.claim_game_turns(token)
+        if res["status"] == "success":
+            success_count += 1
+        await asyncio.sleep(0.5) # Avoid spamming
+
+    await query.edit_message_text(
+        format_premium_msg(f"<b>GAME ENGINE UPDATE:</b>\nSuccessfully claimed daily turns for {success_count} accounts.", "🎮"),
+        parse_mode=ParseMode.HTML,
+        reply_markup=back_to_main_menu_keyboard()
     )
 
 async def select_account_to_manage(update: Update, context) -> None:
@@ -296,7 +327,8 @@ async def check_balance_single(update: Update, context) -> None:
     
     response = await api.get_balance(token, phone)
     if response["status"] == "success":
-        await query.edit_message_text(format_balance_pro(alias if alias else phone, response["data"]), parse_mode=ParseMode.HTML, reply_markup=account_management_keyboard(account_id))
+        points = response.get("points", "0")
+        await query.edit_message_text(format_balance_pro(alias if alias else phone, response["data"], points), parse_mode=ParseMode.HTML, reply_markup=account_management_keyboard(account_id))
     else:
         await query.edit_message_text(format_premium_msg(f"❌ {response['message']}", "⚠️"), parse_mode=ParseMode.HTML, reply_markup=account_management_keyboard(account_id))
 
@@ -334,7 +366,7 @@ async def view_token(update: Update, context) -> None:
             reply_markup=account_management_keyboard(account_id)
         )
     except:
-        pass # User might have clicked another button
+        pass
 
 async def delete_account_confirm(update: Update, context) -> None:
     query = update.callback_query
@@ -366,15 +398,12 @@ async def unknown_message(update: Update, context) -> None:
     else: await update.message.reply_html(format_premium_msg(MESSAGES["main_menu"], "⚡"), reply_markup=main_menu_keyboard())
 
 def main() -> None:
-    # Start Keep-Alive Server in Background
     threading.Thread(target=run_flask, daemon=True).start()
     
-    # Init DB
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
     loop.run_until_complete(init_db())
 
-    # Start Bot
     application = Application.builder().token(BOT_TOKEN).build()
 
     application.add_handler(CommandHandler("start", start))
@@ -384,6 +413,7 @@ def main() -> None:
     application.add_handler(CallbackQueryHandler(login_token_start, pattern="^login_token$"))
     application.add_handler(CallbackQueryHandler(check_balance_all, pattern="^check_balance$"))
     application.add_handler(CallbackQueryHandler(manage_accounts_list, pattern="^manage_accounts$"))
+    application.add_handler(CallbackQueryHandler(claim_all_turns, pattern="^claim_all_turns$"))
     application.add_handler(CallbackQueryHandler(select_account_to_manage, pattern="^select_account_\\d+$"))
     application.add_handler(CallbackQueryHandler(check_balance_single, pattern="^check_balance_single_\\d+$"))
     application.add_handler(CallbackQueryHandler(view_token, pattern="^view_token_\\d+$"))
