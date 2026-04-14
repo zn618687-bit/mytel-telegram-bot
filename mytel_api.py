@@ -9,7 +9,7 @@ logger = logging.getLogger(__name__)
 
 class MytelProAPI:
     def __init__(self):
-        # Professional Mobile User-Agent (Common for Mytel/MyID)
+        # Professional Mobile User-Agent
         self.headers = {
             "Accept": "application/json",
             "Content-Type": "application/json",
@@ -30,7 +30,7 @@ class MytelProAPI:
                     status = response.status
                     content = await response.read()
                     
-                    # Handle Gzip manually if needed, though aiohttp usually does it
+                    # Handle Gzip manually if needed
                     if response.headers.get('Content-Encoding') == 'gzip':
                         try:
                             content = gzip.decompress(content)
