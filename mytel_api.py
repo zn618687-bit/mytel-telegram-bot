@@ -2,41 +2,50 @@ import aiohttp
 import json
 import logging
 import asyncio
+import gzip
 from config import MYTEL_OTP_REQUEST_URL, MYTEL_OTP_VALIDATE_URL, MYTEL_BALANCE_URL
 
 logger = logging.getLogger(__name__)
 
 class MytelProAPI:
     def __init__(self):
-        # Professional Mobile User-Agent
+        # Professional Mobile User-Agent (Common for Mytel/MyID)
         self.headers = {
             "Accept": "application/json",
             "Content-Type": "application/json",
             "User-Agent": "Dalvik/2.1.0 (Linux; U; Android 12; SM-G998B Build/SP1A.210812.016)",
-            "Accept-Encoding": "gzip, deflate",
+            "Accept-Encoding": "gzip",
             "Connection": "keep-alive"
         }
-        self.timeout = aiohttp.ClientTimeout(total=15)
+        self.timeout = aiohttp.ClientTimeout(total=20)
         self.loyalty_url = "https://apis.mytel.com.mm/loyalty/v2.0/api/pack/j4u?phoneNo={phone}"
         self.game_profile_url = "https://pubapi-mygov2.mtgmm.co/v1/engine/user/profile"
 
     async def _make_request(self, method, url, headers=None, **kwargs):
-        """Standardized async request handler with robust error handling."""
+        """Standardized async request handler with robust Gzip and JSON handling."""
         req_headers = headers if headers else self.headers
         try:
             async with aiohttp.ClientSession(headers=req_headers, timeout=self.timeout) as session:
                 async with session.request(method, url, **kwargs) as response:
                     status = response.status
+                    content = await response.read()
+                    
+                    # Handle Gzip manually if needed, though aiohttp usually does it
+                    if response.headers.get('Content-Encoding') == 'gzip':
+                        try:
+                            content = gzip.decompress(content)
+                        except Exception as e:
+                            logger.error(f"Gzip decompression failed: {e}")
+
                     try:
-                        # aiohttp handles gzip automatically if 'Accept-Encoding' is set or by default
-                        data = await response.json()
+                        data = json.loads(content.decode('utf-8'))
                     except:
-                        data = await response.text()
+                        data = content.decode('utf-8', errors='ignore')
 
                     if status == 200:
                         if isinstance(data, dict):
-                            # Handle various success codes from Mytel (0, 200, "0", "200")
-                            err_code = data.get("errorCode") or data.get("code")
+                            # Mytel uses errorCode or code
+                            err_code = data.get("errorCode") if data.get("errorCode") is not None else data.get("code")
                             if err_code in [0, 200, "0", "200"]:
                                 return {"status": "success", "message": "OK", "data": data}
                             return {"status": "error", "message": data.get("message") or data.get("desc") or "API Error", "data": data}
@@ -76,7 +85,6 @@ class MytelProAPI:
         points_res = await self._make_request("GET", self.loyalty_url.format(phone=phone), headers=headers)
         if points_res["status"] == "success":
             try:
-                # Extract points from nested structure
                 points = points_res["data"]["result"]["loyalty_point"]
             except: pass
 
@@ -88,5 +96,4 @@ class MytelProAPI:
     async def claim_game_turns(self, token):
         """🎮 Daily Free Turns Claim (Hit Game Profile API)."""
         headers = {**self.headers, "Authorization": f"Bearer {token}"}
-        # Calling the profile API triggers daily turn allocation in MyID engine
         return await self._make_request("GET", self.game_profile_url, headers=headers)

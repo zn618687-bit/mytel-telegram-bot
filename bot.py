@@ -4,6 +4,7 @@ import os
 import asyncio
 from flask import Flask
 import threading
+import json
 
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, CommandHandler, CallbackQueryHandler, MessageHandler, filters
@@ -40,13 +41,18 @@ def format_premium_msg(text, icon="⚡"):
     return f"<b>{icon} SYSTEM:</b>\n\n{text}"
 
 def format_balance_pro(phone, data, points="0"):
-    """Professional balance formatting."""
+    """Professional balance formatting with robust parsing."""
     try:
-        res = data["result"][0]["mainBalance"]
-        main = res["main"]["amount"]
-        promo = res["promo"]["amount"]
-        voice = res["voice"]["amount"]
-        data_amt = res["data"]["amount"]
+        # Standard Mytel result path
+        result_list = data.get("result", [])
+        if not result_list:
+            return f"❌ <b>Error:</b> Balance data empty for {phone}"
+            
+        res = result_list[0].get("mainBalance", {})
+        main = res.get("main", {}).get("amount", 0)
+        promo = res.get("promo", {}).get("amount", 0)
+        voice = res.get("voice", {}).get("amount", 0)
+        data_amt = res.get("data", {}).get("amount", 0)
         total = main + promo
         
         msg = (
@@ -64,7 +70,7 @@ def format_balance_pro(phone, data, points="0"):
         return msg
     except Exception as e:
         logger.error(f"Formatting error: {e}")
-        return f"❌ <b>Error parsing balance data for {phone}</b>"
+        return f"❌ <b>Parsing Error:</b> {str(e)} for {phone}"
 
 # --- Dynamic Keyboard Logic ---
 async def get_dynamic_main_menu(user_id):
@@ -73,10 +79,8 @@ async def get_dynamic_main_menu(user_id):
     keyboard = []
     
     if not accounts:
-        # If No Accounts: Show only '➕ အကောင့်ထည့်မည်'
         keyboard.append([InlineKeyboardButton("➕ အကောင့်ထည့်မည်", callback_data="add_account")])
     else:
-        # If Accounts Exist: Show all options
         keyboard.append([InlineKeyboardButton("➕ အကောင့်ထည့်မည်", callback_data="add_account")])
         keyboard.append([InlineKeyboardButton("📊 လက်ကျန်ကြည့်မည်", callback_data="select_account_for_balance")])
         keyboard.append([InlineKeyboardButton("👥 အကောင့်များကြည့်မည်", callback_data="manage_accounts")])
@@ -89,7 +93,6 @@ async def get_dynamic_main_menu(user_id):
 async def start(update: Update, context) -> None:
     user = update.effective_user
     await add_user(user.id, user.first_name, user.username)
-    
     keyboard = await get_dynamic_main_menu(user.id)
     await update.message.reply_html(
         format_premium_msg(MESSAGES["start"].format(name=user.mention_html()), "🛡️"),
@@ -101,7 +104,6 @@ async def main_menu(update: Update, context) -> None:
     query = update.callback_query
     await query.answer()
     user_id = query.from_user.id
-    
     keyboard = await get_dynamic_main_menu(user_id)
     await query.edit_message_text(
         format_premium_msg(MESSAGES["main_menu"], "⚡"),
@@ -133,17 +135,14 @@ async def login_otp_start(update: Update, context) -> None:
 async def receive_phone_number(update: Update, context) -> None:
     user_id = update.effective_user.id
     user_state = await get_user_state(user_id)
-
     if user_state and user_state[0] == "WAITING_FOR_PHONE_NUMBER":
         phone_number = update.message.text
         if not re.fullmatch(r"^09\d{7,9}$", phone_number):
             await update.message.reply_html(format_premium_msg(MESSAGES["invalid_phone_number"], "❌"))
             return
-
         loading_msg = await update.message.reply_html("📡 <i>Processing... Requesting OTP.</i>")
         response = await api.send_otp(phone_number)
         await loading_msg.delete()
-        
         if response["status"] == "success":
             await update.message.reply_html(
                 format_premium_msg(MESSAGES["otp_sent"].format(phone_number=phone_number), "📨"),
@@ -160,23 +159,18 @@ async def receive_phone_number(update: Update, context) -> None:
 async def receive_otp_code(update: Update, context) -> None:
     user_id = update.effective_user.id
     user_state = await get_user_state(user_id)
-
     if user_state and user_state[0] == "WAITING_FOR_OTP_CODE":
         otp_code = update.message.text
         phone_number = user_state[1]
-
         loading_msg = await update.message.reply_html("📡 <i>Verifying OTP... Please wait.</i>")
         response = await api.validate_otp(phone_number, otp_code)
         await loading_msg.delete()
-        
         if response["status"] == "success":
             data = response["data"]
             token = data["result"]["access_token"] if "result" in data else data.get("access_token")
-            
             if not token:
                 await update.message.reply_html(format_premium_msg("❌ <b>Security Breach:</b> Token not found.", "⚠️"))
                 return
-
             context.user_data["new_account_phone"] = phone_number
             context.user_data["new_account_token"] = token
             await update.message.reply_html(format_premium_msg(MESSAGES["otp_login_success"], "✅"))
@@ -198,15 +192,11 @@ async def login_token_start(update: Update, context) -> None:
 async def receive_token(update: Update, context) -> None:
     user_id = update.effective_user.id
     user_state = await get_user_state(user_id)
-
     if user_state and user_state[0] == "WAITING_FOR_TOKEN":
         token = update.message.text
         loading_msg = await update.message.reply_html("📡 <i>Validating Token...</i>")
-        
-        # Validate with dummy ISDN
         response = await api.get_balance(token, "09688888888")
         await loading_msg.delete()
-        
         if response["status"] == "success":
             phone_number = response["data"]["result"][0]["msisdn"]
             context.user_data["new_account_phone"] = phone_number
@@ -220,7 +210,6 @@ async def receive_token(update: Update, context) -> None:
 async def receive_alias(update: Update, context) -> None:
     user_id = update.effective_user.id
     user_state = await get_user_state(user_id)
-
     if user_state and user_state[0] == "WAITING_FOR_ALIAS":
         alias = update.message.text
         if alias == "/skip":
@@ -228,10 +217,8 @@ async def receive_alias(update: Update, context) -> None:
             await update.message.reply_html(format_premium_msg(MESSAGES["skip_alias"], "👤"))
         else:
             await update.message.reply_html(format_premium_msg(MESSAGES["alias_set_success"], "✅"))
-
         phone_number = context.user_data.get("new_account_phone")
         token = context.user_data.get("new_account_token")
-
         if phone_number and token:
             try:
                 await add_account(user_id, phone_number, token, alias)
@@ -247,27 +234,22 @@ async def receive_alias(update: Update, context) -> None:
             await update.message.reply_html(format_premium_msg(MESSAGES["something_went_wrong"], "❌"), reply_markup=keyboard)
             await delete_user_state(user_id)
 
-# --- Interactive Balance Check (New Logic) ---
+# --- Interactive Balance Check ---
 
 async def select_account_for_balance(update: Update, context) -> None:
-    """Step 1: Show list of phone numbers as buttons."""
     query = update.callback_query
     await query.answer()
     user_id = query.from_user.id
     accounts = await get_accounts(user_id)
-    
     if not accounts:
         keyboard = await get_dynamic_main_menu(user_id)
         await query.edit_message_text(format_premium_msg(MESSAGES["no_accounts"], "⚠️"), parse_mode=ParseMode.HTML, reply_markup=keyboard)
         return
-
     keyboard = []
     for acc_id, phone, alias, _ in accounts:
         display_name = f"👤 {alias if alias else phone}"
         keyboard.append([InlineKeyboardButton(display_name, callback_data=f"view_balance_id_{acc_id}")])
-    
     keyboard.append([InlineKeyboardButton("⬅️ Back to Main Menu", callback_data="main_menu")])
-    
     await query.edit_message_text(
         format_premium_msg("📊 <b>လက်ကျန်စစ်ဆေးရန် အကောင့်ရွေးချယ်ပါ:</b>", "📡"),
         parse_mode=ParseMode.HTML,
@@ -275,25 +257,20 @@ async def select_account_for_balance(update: Update, context) -> None:
     )
 
 async def view_single_balance(update: Update, context) -> None:
-    """Step 2: Show balance for a specific account."""
     query = update.callback_query
     await query.answer()
     user_id = query.from_user.id
     account_id = int(query.data.split('_')[-1])
-
     account = await get_account_by_id(account_id, user_id)
     if not account:
         await query.edit_message_text(format_premium_msg("❌ Account not found.", "⚠️"), parse_mode=ParseMode.HTML, reply_markup=back_to_main_menu_keyboard())
         return
-
     _, phone, alias, token = account
-    await query.edit_message_text(f"📡 <i>Fetching balance for {phone}...</i>", parse_mode=ParseMode.HTML)
-    
+    await query.edit_message_text(f"📡 <i>Scanning Network for {phone}...</i>", parse_mode=ParseMode.HTML)
     response = await api.get_balance(token, phone)
     if response["status"] == "success":
         points = response.get("points", "0")
         msg = format_balance_pro(alias if alias else phone, response["data"], points)
-        
         keyboard = [[InlineKeyboardButton("⬅️ Back to List", callback_data="select_account_for_balance")]]
         await query.edit_message_text(msg, parse_mode=ParseMode.HTML, reply_markup=InlineKeyboardMarkup(keyboard))
     elif response["message"] == "Unauthorized/Expired":
@@ -304,20 +281,17 @@ async def view_single_balance(update: Update, context) -> None:
         keyboard = [[InlineKeyboardButton("⬅️ Back to List", callback_data="select_account_for_balance")]]
         await query.edit_message_text(format_premium_msg(f"❌ <b>Error:</b> {response['message']}", "⚠️"), parse_mode=ParseMode.HTML, reply_markup=InlineKeyboardMarkup(keyboard))
 
-# --- Bug Fix: View Accounts & Game Claim ---
+# --- Game Claim & Manage Accounts ---
 
 async def manage_accounts_list(update: Update, context) -> None:
-    """Fix: Ensure 'အကောင့်များကြည့်မည်' works even for 1 account."""
     query = update.callback_query
     await query.answer()
     user_id = query.from_user.id
     accounts = await get_accounts(user_id)
-    
     if not accounts:
         keyboard = await get_dynamic_main_menu(user_id)
         await query.edit_message_text(format_premium_msg(MESSAGES["no_accounts"], "⚠️"), parse_mode=ParseMode.HTML, reply_markup=keyboard)
         return
-
     await query.edit_message_text(
         format_premium_msg(MESSAGES["your_accounts"], "👥"),
         parse_mode=ParseMode.HTML,
@@ -325,22 +299,16 @@ async def manage_accounts_list(update: Update, context) -> None:
     )
 
 async def claim_all_turns(update: Update, context) -> None:
-    """Fix: Correctly fetch every token and provide summary."""
     query = update.callback_query
     await query.answer()
     user_id = query.from_user.id
     accounts = await get_accounts(user_id)
-    
     if not accounts:
-        await query.edit_message_text(format_premium_msg("❌ No accounts found to claim turns.", "⚠️"), parse_mode=ParseMode.HTML, reply_markup=back_to_main_menu_keyboard())
+        await query.edit_message_text(format_premium_msg("❌ No accounts found.", "⚠️"), parse_mode=ParseMode.HTML, reply_markup=back_to_main_menu_keyboard())
         return
-
     await query.edit_message_text("🎮 <i>Scanning Game Engine for Free Turns...</i>", parse_mode=ParseMode.HTML)
-    
     success_count = 0
     fail_count = 0
-    total = len(accounts)
-    
     for _, phone, _, token in accounts:
         res = await api.claim_game_turns(token)
         if res["status"] == "success":
@@ -348,17 +316,15 @@ async def claim_all_turns(update: Update, context) -> None:
         else:
             fail_count += 1
         await asyncio.sleep(0.5)
-
     summary = (
         f"🎮 <b>GAME ENGINE SUMMARY</b>\n"
         f"━━━━━━━━━━━━━━━━━━━━\n"
         f"✅ <b>SUCCESS:</b> {success_count} accounts\n"
         f"❌ <b>FAILED:</b> {fail_count} accounts\n"
-        f"📊 <b>TOTAL:</b> {total} accounts\n"
+        f"📊 <b>TOTAL:</b> {len(accounts)} accounts\n"
         f"━━━━━━━━━━━━━━━━━━━━\n"
-        f"💎 <i>Daily free turns have been triggered.</i>"
+        f"💎 <i>Daily free turns triggered.</i>"
     )
-    
     keyboard = await get_dynamic_main_menu(user_id)
     await query.edit_message_text(summary, parse_mode=ParseMode.HTML, reply_markup=keyboard)
 
@@ -367,12 +333,10 @@ async def select_account_to_manage(update: Update, context) -> None:
     await query.answer()
     user_id = query.from_user.id
     account_id = int(query.data.split('_')[-1])
-
     account = await get_account_by_id(account_id, user_id)
     if not account:
         await query.edit_message_text(format_premium_msg("❌ Account not found.", "⚠️"), parse_mode=ParseMode.HTML, reply_markup=back_to_main_menu_keyboard())
         return
-
     _, phone, alias, _ = account
     display_name = alias if alias else phone
     await query.edit_message_text(
@@ -382,18 +346,14 @@ async def select_account_to_manage(update: Update, context) -> None:
     )
 
 async def check_balance_single_from_manage(update: Update, context) -> None:
-    """Check balance from management menu."""
     query = update.callback_query
     await query.answer()
     user_id = query.from_user.id
     account_id = int(query.data.split('_')[-1])
-
     account = await get_account_by_id(account_id, user_id)
     if not account: return
-
     _, phone, alias, token = account
     await query.edit_message_text("📡 <i>Scanning Network Data...</i>", parse_mode=ParseMode.HTML)
-    
     response = await api.get_balance(token, phone)
     if response["status"] == "success":
         points = response.get("points", "0")
@@ -402,27 +362,22 @@ async def check_balance_single_from_manage(update: Update, context) -> None:
         await query.edit_message_text(format_premium_msg(f"❌ {response['message']}", "⚠️"), parse_mode=ParseMode.HTML, reply_markup=account_management_keyboard(account_id))
 
 async def view_token(update: Update, context) -> None:
-    """🛡️ View token with 5-second Auto-Hide."""
     query = update.callback_query
     await query.answer()
     user_id = query.from_user.id
     account_id = int(query.data.split('_')[-1])
-
     account = await get_account_by_id(account_id, user_id)
     if not account: return
-
     _, phone, alias, token = account
     token_msg = (
         f"🛡️ <b>SECURITY ACCESS GRANTED</b>\n"
         f"━━━━━━━━━━━━━━━━━━━━\n"
         f"🔑 <b>TOKEN:</b> <code>{token}</code>\n"
         f"━━━━━━━━━━━━━━━━━━━━\n"
-        f"⚠️ <i>Auto-hiding in 5 seconds for security...</i>"
+        f"⚠️ <i>Auto-hiding in 5 seconds...</i>"
     )
-    
     await query.edit_message_text(token_msg, parse_mode=ParseMode.HTML)
     await asyncio.sleep(5)
-    
     display_name = alias if alias else phone
     try:
         await query.edit_message_text(
@@ -437,7 +392,6 @@ async def delete_account_confirm(update: Update, context) -> None:
     await query.answer()
     user_id = query.from_user.id
     account_id = int(query.data.split('_')[-1])
-
     await delete_account(account_id, user_id)
     keyboard = await get_dynamic_main_menu(user_id)
     await query.edit_message_text(format_premium_msg(MESSAGES["account_deleted_success"], "🗑️"), parse_mode=ParseMode.HTML, reply_markup=keyboard)
@@ -457,7 +411,6 @@ async def unknown_message(update: Update, context) -> None:
         keyboard = await get_dynamic_main_menu(user_id)
         await update.message.reply_html(format_premium_msg(MESSAGES["main_menu"], "⚡"), reply_markup=keyboard)
         return
-
     state = user_state[0]
     if state == "WAITING_FOR_PHONE_NUMBER": await receive_phone_number(update, context)
     elif state == "WAITING_FOR_OTP_CODE": await receive_otp_code(update, context)
@@ -469,23 +422,17 @@ async def unknown_message(update: Update, context) -> None:
 
 def main() -> None:
     threading.Thread(target=run_flask, daemon=True).start()
-    
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
     loop.run_until_complete(init_db())
-
     application = Application.builder().token(BOT_TOKEN).build()
-
     application.add_handler(CommandHandler("start", start))
     application.add_handler(CallbackQueryHandler(main_menu, pattern="^main_menu$"))
     application.add_handler(CallbackQueryHandler(add_account_prompt, pattern="^add_account$"))
     application.add_handler(CallbackQueryHandler(login_otp_start, pattern="^login_otp$"))
     application.add_handler(CallbackQueryHandler(login_token_start, pattern="^login_token$"))
-    
-    # New Interactive Balance Logic
     application.add_handler(CallbackQueryHandler(select_account_for_balance, pattern="^select_account_for_balance$"))
     application.add_handler(CallbackQueryHandler(view_single_balance, pattern="^view_balance_id_\\d+$"))
-    
     application.add_handler(CallbackQueryHandler(manage_accounts_list, pattern="^manage_accounts$"))
     application.add_handler(CallbackQueryHandler(claim_all_turns, pattern="^claim_all_turns$"))
     application.add_handler(CallbackQueryHandler(select_account_to_manage, pattern="^select_account_\\d+$"))
@@ -493,9 +440,7 @@ def main() -> None:
     application.add_handler(CallbackQueryHandler(view_token, pattern="^view_token_\\d+$"))
     application.add_handler(CallbackQueryHandler(delete_account_confirm, pattern="^delete_account_\\d+$"))
     application.add_handler(CallbackQueryHandler(cancel_operation, pattern="^cancel$"))
-    
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, unknown_message))
-
     application.run_polling(allowed_updates=Update.ALL_TYPES)
 
 if __name__ == "__main__":
