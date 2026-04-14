@@ -12,7 +12,7 @@ from telegram.constants import ParseMode
 from config import BOT_TOKEN
 from database import init_db, add_user, add_account, get_accounts, delete_account, set_user_state, get_user_state, delete_user_state, get_account_by_id
 from mytel_api import MytelProAPI
-from keyboards import main_menu_keyboard, login_method_keyboard, back_to_main_menu_keyboard, account_list_keyboard, account_management_keyboard, cancel_keyboard
+from keyboards import login_method_keyboard, back_to_main_menu_keyboard, account_list_keyboard, account_management_keyboard, cancel_keyboard
 from messages import MESSAGES
 
 # --- Render/Keep-Alive Flask App ---
@@ -20,7 +20,7 @@ app = Flask(__name__)
 
 @app.route('/')
 def home():
-    return "⚡ Mytel Multi-Account Bot Final Version is Online!"
+    return "⚡ Mytel Multi-Account Bot Professional Overhaul is Online!"
 
 def run_flask():
     port = int(os.environ.get("PORT", 8080))
@@ -66,26 +66,49 @@ def format_balance_pro(phone, data, points="0"):
         logger.error(f"Formatting error: {e}")
         return f"❌ <b>Error parsing balance data for {phone}</b>"
 
+# --- Dynamic Keyboard Logic ---
+async def get_dynamic_main_menu(user_id):
+    """Generate menu based on account existence."""
+    accounts = await get_accounts(user_id)
+    keyboard = []
+    
+    if not accounts:
+        # If No Accounts: Show only '➕ အကောင့်ထည့်မည်'
+        keyboard.append([InlineKeyboardButton("➕ အကောင့်ထည့်မည်", callback_data="add_account")])
+    else:
+        # If Accounts Exist: Show all options
+        keyboard.append([InlineKeyboardButton("➕ အကောင့်ထည့်မည်", callback_data="add_account")])
+        keyboard.append([InlineKeyboardButton("📊 လက်ကျန်ကြည့်မည်", callback_data="select_account_for_balance")])
+        keyboard.append([InlineKeyboardButton("👥 အကောင့်များကြည့်မည်", callback_data="manage_accounts")])
+        keyboard.append([InlineKeyboardButton("🎮 Claim All Free Turns", callback_data="claim_all_turns")])
+        
+    return InlineKeyboardMarkup(keyboard)
+
 # --- Handlers ---
 
 async def start(update: Update, context) -> None:
     user = update.effective_user
     await add_user(user.id, user.first_name, user.username)
+    
+    keyboard = await get_dynamic_main_menu(user.id)
     await update.message.reply_html(
         format_premium_msg(MESSAGES["start"].format(name=user.mention_html()), "🛡️"),
-        reply_markup=main_menu_keyboard()
+        reply_markup=keyboard
     )
     await delete_user_state(user.id)
 
 async def main_menu(update: Update, context) -> None:
     query = update.callback_query
     await query.answer()
+    user_id = query.from_user.id
+    
+    keyboard = await get_dynamic_main_menu(user_id)
     await query.edit_message_text(
         format_premium_msg(MESSAGES["main_menu"], "⚡"),
         parse_mode=ParseMode.HTML,
-        reply_markup=main_menu_keyboard()
+        reply_markup=keyboard
     )
-    await delete_user_state(query.from_user.id)
+    await delete_user_state(user_id)
 
 async def add_account_prompt(update: Update, context) -> None:
     query = update.callback_query
@@ -118,7 +141,6 @@ async def receive_phone_number(update: Update, context) -> None:
             return
 
         loading_msg = await update.message.reply_html("📡 <i>Processing... Requesting OTP.</i>")
-        
         response = await api.send_otp(phone_number)
         await loading_msg.delete()
         
@@ -148,12 +170,11 @@ async def receive_otp_code(update: Update, context) -> None:
         await loading_msg.delete()
         
         if response["status"] == "success":
-            # Extract token
             data = response["data"]
             token = data["result"]["access_token"] if "result" in data else data.get("access_token")
             
             if not token:
-                await update.message.reply_html(format_premium_msg("❌ <b>Security Breach:</b> Token not found in response.", "⚠️"))
+                await update.message.reply_html(format_premium_msg("❌ <b>Security Breach:</b> Token not found.", "⚠️"))
                 return
 
             context.user_data["new_account_phone"] = phone_number
@@ -214,81 +235,132 @@ async def receive_alias(update: Update, context) -> None:
         if phone_number and token:
             try:
                 await add_account(user_id, phone_number, token, alias)
-                await update.message.reply_html(format_premium_msg(MESSAGES["account_added_success"], "🛡️"), reply_markup=main_menu_keyboard())
+                keyboard = await get_dynamic_main_menu(user_id)
+                await update.message.reply_html(format_premium_msg(MESSAGES["account_added_success"], "🛡️"), reply_markup=keyboard)
             except:
-                await update.message.reply_html(format_premium_msg(MESSAGES["account_already_exists"], "⚠️"), reply_markup=main_menu_keyboard())
+                keyboard = await get_dynamic_main_menu(user_id)
+                await update.message.reply_html(format_premium_msg(MESSAGES["account_already_exists"], "⚠️"), reply_markup=keyboard)
             finally:
                 await delete_user_state(user_id)
         else:
-            await update.message.reply_html(format_premium_msg(MESSAGES["something_went_wrong"], "❌"), reply_markup=main_menu_keyboard())
+            keyboard = await get_dynamic_main_menu(user_id)
+            await update.message.reply_html(format_premium_msg(MESSAGES["something_went_wrong"], "❌"), reply_markup=keyboard)
             await delete_user_state(user_id)
 
-async def check_balance_all(update: Update, context) -> None:
+# --- Interactive Balance Check (New Logic) ---
+
+async def select_account_for_balance(update: Update, context) -> None:
+    """Step 1: Show list of phone numbers as buttons."""
     query = update.callback_query
     await query.answer()
     user_id = query.from_user.id
-
     accounts = await get_accounts(user_id)
+    
     if not accounts:
-        await query.edit_message_text(format_premium_msg(MESSAGES["no_accounts"], "⚠️"), parse_mode=ParseMode.HTML, reply_markup=back_to_main_menu_keyboard())
+        keyboard = await get_dynamic_main_menu(user_id)
+        await query.edit_message_text(format_premium_msg(MESSAGES["no_accounts"], "⚠️"), parse_mode=ParseMode.HTML, reply_markup=keyboard)
         return
 
-    await query.edit_message_text("📡 <i>Retrieving Multi-Account Data...</i>", parse_mode=ParseMode.HTML)
+    keyboard = []
+    for acc_id, phone, alias, _ in accounts:
+        display_name = f"👤 {alias if alias else phone}"
+        keyboard.append([InlineKeyboardButton(display_name, callback_data=f"view_balance_id_{acc_id}")])
     
-    response_messages = []
-    for acc_id, phone, alias, token in accounts:
-        response = await api.get_balance(token, phone)
-        if response["status"] == "success":
-            points = response.get("points", "0")
-            response_messages.append(format_balance_pro(alias if alias else phone, response["data"], points))
-        elif response["message"] == "Unauthorized/Expired":
-            await delete_account(acc_id, user_id)
-            response_messages.append(f"❌ <b>{phone}:</b> Token Expired (Auto-Removed)")
-        else:
-            response_messages.append(f"❌ <b>{phone}:</b> {response['message']}")
+    keyboard.append([InlineKeyboardButton("⬅️ Back to Main Menu", callback_data="main_menu")])
+    
+    await query.edit_message_text(
+        format_premium_msg("📊 <b>လက်ကျန်စစ်ဆေးရန် အကောင့်ရွေးချယ်ပါ:</b>", "📡"),
+        parse_mode=ParseMode.HTML,
+        reply_markup=InlineKeyboardMarkup(keyboard)
+    )
 
-    final_message = "\n\n".join(response_messages)
-    await query.edit_message_text(final_message, parse_mode=ParseMode.HTML, reply_markup=back_to_main_menu_keyboard())
+async def view_single_balance(update: Update, context) -> None:
+    """Step 2: Show balance for a specific account."""
+    query = update.callback_query
+    await query.answer()
+    user_id = query.from_user.id
+    account_id = int(query.data.split('_')[-1])
+
+    account = await get_account_by_id(account_id, user_id)
+    if not account:
+        await query.edit_message_text(format_premium_msg("❌ Account not found.", "⚠️"), parse_mode=ParseMode.HTML, reply_markup=back_to_main_menu_keyboard())
+        return
+
+    _, phone, alias, token = account
+    await query.edit_message_text(f"📡 <i>Fetching balance for {phone}...</i>", parse_mode=ParseMode.HTML)
+    
+    response = await api.get_balance(token, phone)
+    if response["status"] == "success":
+        points = response.get("points", "0")
+        msg = format_balance_pro(alias if alias else phone, response["data"], points)
+        
+        keyboard = [[InlineKeyboardButton("⬅️ Back to List", callback_data="select_account_for_balance")]]
+        await query.edit_message_text(msg, parse_mode=ParseMode.HTML, reply_markup=InlineKeyboardMarkup(keyboard))
+    elif response["message"] == "Unauthorized/Expired":
+        await delete_account(account_id, user_id)
+        keyboard = [[InlineKeyboardButton("⬅️ Back to List", callback_data="select_account_for_balance")]]
+        await query.edit_message_text(format_premium_msg(f"❌ <b>{phone}:</b> Token Expired (Auto-Removed)", "⚠️"), parse_mode=ParseMode.HTML, reply_markup=InlineKeyboardMarkup(keyboard))
+    else:
+        keyboard = [[InlineKeyboardButton("⬅️ Back to List", callback_data="select_account_for_balance")]]
+        await query.edit_message_text(format_premium_msg(f"❌ <b>Error:</b> {response['message']}", "⚠️"), parse_mode=ParseMode.HTML, reply_markup=InlineKeyboardMarkup(keyboard))
+
+# --- Bug Fix: View Accounts & Game Claim ---
 
 async def manage_accounts_list(update: Update, context) -> None:
+    """Fix: Ensure 'အကောင့်များကြည့်မည်' works even for 1 account."""
     query = update.callback_query
     await query.answer()
     user_id = query.from_user.id
     accounts = await get_accounts(user_id)
     
     if not accounts:
-        await query.edit_message_text(format_premium_msg(MESSAGES["no_accounts"], "⚠️"), parse_mode=ParseMode.HTML, reply_markup=back_to_main_menu_keyboard())
+        keyboard = await get_dynamic_main_menu(user_id)
+        await query.edit_message_text(format_premium_msg(MESSAGES["no_accounts"], "⚠️"), parse_mode=ParseMode.HTML, reply_markup=keyboard)
         return
 
     await query.edit_message_text(
-        format_premium_msg(MESSAGES["your_accounts"], "📡"),
+        format_premium_msg(MESSAGES["your_accounts"], "👥"),
         parse_mode=ParseMode.HTML,
         reply_markup=account_list_keyboard(accounts)
     )
 
 async def claim_all_turns(update: Update, context) -> None:
-    """🎮 Auto-Claim Free Turns for all accounts."""
+    """Fix: Correctly fetch every token and provide summary."""
     query = update.callback_query
     await query.answer()
     user_id = query.from_user.id
     accounts = await get_accounts(user_id)
     
-    if not accounts: return
+    if not accounts:
+        await query.edit_message_text(format_premium_msg("❌ No accounts found to claim turns.", "⚠️"), parse_mode=ParseMode.HTML, reply_markup=back_to_main_menu_keyboard())
+        return
 
     await query.edit_message_text("🎮 <i>Scanning Game Engine for Free Turns...</i>", parse_mode=ParseMode.HTML)
     
     success_count = 0
-    for _, _, _, token in accounts:
+    fail_count = 0
+    total = len(accounts)
+    
+    for _, phone, _, token in accounts:
         res = await api.claim_game_turns(token)
         if res["status"] == "success":
             success_count += 1
-        await asyncio.sleep(0.5) # Avoid spamming
+        else:
+            fail_count += 1
+        await asyncio.sleep(0.5)
 
-    await query.edit_message_text(
-        format_premium_msg(f"<b>GAME ENGINE UPDATE:</b>\nSuccessfully claimed daily turns for {success_count} accounts.", "🎮"),
-        parse_mode=ParseMode.HTML,
-        reply_markup=back_to_main_menu_keyboard()
+    summary = (
+        f"🎮 <b>GAME ENGINE SUMMARY</b>\n"
+        f"━━━━━━━━━━━━━━━━━━━━\n"
+        f"✅ <b>SUCCESS:</b> {success_count} accounts\n"
+        f"❌ <b>FAILED:</b> {fail_count} accounts\n"
+        f"📊 <b>TOTAL:</b> {total} accounts\n"
+        f"━━━━━━━━━━━━━━━━━━━━\n"
+        f"💎 <i>Daily free turns have been triggered.</i>"
     )
+    
+    keyboard = await get_dynamic_main_menu(user_id)
+    await query.edit_message_text(summary, parse_mode=ParseMode.HTML, reply_markup=keyboard)
 
 async def select_account_to_manage(update: Update, context) -> None:
     query = update.callback_query
@@ -309,7 +381,8 @@ async def select_account_to_manage(update: Update, context) -> None:
         reply_markup=account_management_keyboard(account_id)
     )
 
-async def check_balance_single(update: Update, context) -> None:
+async def check_balance_single_from_manage(update: Update, context) -> None:
+    """Check balance from management menu."""
     query = update.callback_query
     await query.answer()
     user_id = query.from_user.id
@@ -329,7 +402,7 @@ async def check_balance_single(update: Update, context) -> None:
         await query.edit_message_text(format_premium_msg(f"❌ {response['message']}", "⚠️"), parse_mode=ParseMode.HTML, reply_markup=account_management_keyboard(account_id))
 
 async def view_token(update: Update, context) -> None:
-    """🛡️ View token with Auto-Hide mechanism."""
+    """🛡️ View token with 5-second Auto-Hide."""
     query = update.callback_query
     await query.answer()
     user_id = query.from_user.id
@@ -338,7 +411,7 @@ async def view_token(update: Update, context) -> None:
     account = await get_account_by_id(account_id, user_id)
     if not account: return
 
-    _, _, _, token = account
+    _, phone, alias, token = account
     token_msg = (
         f"🛡️ <b>SECURITY ACCESS GRANTED</b>\n"
         f"━━━━━━━━━━━━━━━━━━━━\n"
@@ -348,12 +421,8 @@ async def view_token(update: Update, context) -> None:
     )
     
     await query.edit_message_text(token_msg, parse_mode=ParseMode.HTML)
-    
-    # Auto-Hide logic
     await asyncio.sleep(5)
     
-    # Restore original menu
-    _, phone, alias, _ = account
     display_name = alias if alias else phone
     try:
         await query.edit_message_text(
@@ -361,8 +430,7 @@ async def view_token(update: Update, context) -> None:
             parse_mode=ParseMode.HTML,
             reply_markup=account_management_keyboard(account_id)
         )
-    except:
-        pass
+    except: pass
 
 async def delete_account_confirm(update: Update, context) -> None:
     query = update.callback_query
@@ -371,19 +439,23 @@ async def delete_account_confirm(update: Update, context) -> None:
     account_id = int(query.data.split('_')[-1])
 
     await delete_account(account_id, user_id)
-    await query.edit_message_text(format_premium_msg(MESSAGES["account_deleted_success"], "🗑️"), parse_mode=ParseMode.HTML, reply_markup=main_menu_keyboard())
+    keyboard = await get_dynamic_main_menu(user_id)
+    await query.edit_message_text(format_premium_msg(MESSAGES["account_deleted_success"], "🗑️"), parse_mode=ParseMode.HTML, reply_markup=keyboard)
 
 async def cancel_operation(update: Update, context) -> None:
     query = update.callback_query
     await query.answer()
-    await query.edit_message_text(format_premium_msg(MESSAGES["operation_cancelled"], "❌"), parse_mode=ParseMode.HTML, reply_markup=main_menu_keyboard())
-    await delete_user_state(query.from_user.id)
+    user_id = query.from_user.id
+    keyboard = await get_dynamic_main_menu(user_id)
+    await query.edit_message_text(format_premium_msg(MESSAGES["operation_cancelled"], "❌"), parse_mode=ParseMode.HTML, reply_markup=keyboard)
+    await delete_user_state(user_id)
 
 async def unknown_message(update: Update, context) -> None:
     user_id = update.effective_user.id
     user_state = await get_user_state(user_id)
     if not user_state:
-        await update.message.reply_html(format_premium_msg(MESSAGES["main_menu"], "⚡"), reply_markup=main_menu_keyboard())
+        keyboard = await get_dynamic_main_menu(user_id)
+        await update.message.reply_html(format_premium_msg(MESSAGES["main_menu"], "⚡"), reply_markup=keyboard)
         return
 
     state = user_state[0]
@@ -391,7 +463,9 @@ async def unknown_message(update: Update, context) -> None:
     elif state == "WAITING_FOR_OTP_CODE": await receive_otp_code(update, context)
     elif state == "WAITING_FOR_TOKEN": await receive_token(update, context)
     elif state == "WAITING_FOR_ALIAS": await receive_alias(update, context)
-    else: await update.message.reply_html(format_premium_msg(MESSAGES["main_menu"], "⚡"), reply_markup=main_menu_keyboard())
+    else:
+        keyboard = await get_dynamic_main_menu(user_id)
+        await update.message.reply_html(format_premium_msg(MESSAGES["main_menu"], "⚡"), reply_markup=keyboard)
 
 def main() -> None:
     threading.Thread(target=run_flask, daemon=True).start()
@@ -407,14 +481,19 @@ def main() -> None:
     application.add_handler(CallbackQueryHandler(add_account_prompt, pattern="^add_account$"))
     application.add_handler(CallbackQueryHandler(login_otp_start, pattern="^login_otp$"))
     application.add_handler(CallbackQueryHandler(login_token_start, pattern="^login_token$"))
-    application.add_handler(CallbackQueryHandler(check_balance_all, pattern="^check_balance$"))
+    
+    # New Interactive Balance Logic
+    application.add_handler(CallbackQueryHandler(select_account_for_balance, pattern="^select_account_for_balance$"))
+    application.add_handler(CallbackQueryHandler(view_single_balance, pattern="^view_balance_id_\\d+$"))
+    
     application.add_handler(CallbackQueryHandler(manage_accounts_list, pattern="^manage_accounts$"))
     application.add_handler(CallbackQueryHandler(claim_all_turns, pattern="^claim_all_turns$"))
     application.add_handler(CallbackQueryHandler(select_account_to_manage, pattern="^select_account_\\d+$"))
-    application.add_handler(CallbackQueryHandler(check_balance_single, pattern="^check_balance_single_\\d+$"))
+    application.add_handler(CallbackQueryHandler(check_balance_single_from_manage, pattern="^check_balance_single_\\d+$"))
     application.add_handler(CallbackQueryHandler(view_token, pattern="^view_token_\\d+$"))
     application.add_handler(CallbackQueryHandler(delete_account_confirm, pattern="^delete_account_\\d+$"))
     application.add_handler(CallbackQueryHandler(cancel_operation, pattern="^cancel$"))
+    
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, unknown_message))
 
     application.run_polling(allowed_updates=Update.ALL_TYPES)

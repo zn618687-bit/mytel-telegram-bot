@@ -8,15 +8,15 @@ logger = logging.getLogger(__name__)
 
 class MytelProAPI:
     def __init__(self):
-        # Professional Headers for Mytel/MyID
+        # Professional Mobile User-Agent
         self.headers = {
             "Accept": "application/json",
             "Content-Type": "application/json",
-            "User-Agent": "Dalvik/2.1.0 (Linux; U; Android 7.1.2; Pixel 4 Build/RQ3A.211001.001)",
+            "User-Agent": "Dalvik/2.1.0 (Linux; U; Android 12; SM-G998B Build/SP1A.210812.016)",
             "Accept-Encoding": "gzip, deflate",
             "Connection": "keep-alive"
         }
-        self.timeout = aiohttp.ClientTimeout(total=20)
+        self.timeout = aiohttp.ClientTimeout(total=15)
         self.loyalty_url = "https://apis.mytel.com.mm/loyalty/v2.0/api/pack/j4u?phoneNo={phone}"
         self.game_profile_url = "https://pubapi-mygov2.mtgmm.co/v1/engine/user/profile"
 
@@ -28,17 +28,18 @@ class MytelProAPI:
                 async with session.request(method, url, **kwargs) as response:
                     status = response.status
                     try:
+                        # aiohttp handles gzip automatically if 'Accept-Encoding' is set or by default
                         data = await response.json()
                     except:
                         data = await response.text()
 
                     if status == 200:
-                        # Standardize Mytel's mixed error codes
                         if isinstance(data, dict):
-                            err_code = data.get("errorCode")
+                            # Handle various success codes from Mytel (0, 200, "0", "200")
+                            err_code = data.get("errorCode") or data.get("code")
                             if err_code in [0, 200, "0", "200"]:
                                 return {"status": "success", "message": "OK", "data": data}
-                            return {"status": "error", "message": data.get("message", "API Error"), "data": data}
+                            return {"status": "error", "message": data.get("message") or data.get("desc") or "API Error", "data": data}
                         return {"status": "success", "message": "OK", "data": data}
                     elif status == 401:
                         return {"status": "error", "message": "Unauthorized/Expired", "data": None}
@@ -64,7 +65,7 @@ class MytelProAPI:
         return await self._make_request("POST", MYTEL_OTP_VALIDATE_URL, json=payload)
 
     async def get_balance(self, token, phone):
-        """💰 Get Balance, Data, and Points."""
+        """💰 Get Balance, Data, and Loyalty Points."""
         headers = {**self.headers, "Authorization": f"Bearer {token}"}
         
         # 1. Main Balance & Data
@@ -75,6 +76,7 @@ class MytelProAPI:
         points_res = await self._make_request("GET", self.loyalty_url.format(phone=phone), headers=headers)
         if points_res["status"] == "success":
             try:
+                # Extract points from nested structure
                 points = points_res["data"]["result"]["loyalty_point"]
             except: pass
 
@@ -84,7 +86,7 @@ class MytelProAPI:
         return balance_res
 
     async def claim_game_turns(self, token):
-        """🎮 Daily 2 Free Turns Claim (Hit Game Profile API)."""
+        """🎮 Daily Free Turns Claim (Hit Game Profile API)."""
         headers = {**self.headers, "Authorization": f"Bearer {token}"}
-        # Calling the profile API usually triggers daily turn allocation
+        # Calling the profile API triggers daily turn allocation in MyID engine
         return await self._make_request("GET", self.game_profile_url, headers=headers)
