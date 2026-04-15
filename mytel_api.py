@@ -19,7 +19,6 @@ class MytelProAPI:
         }
         self.timeout = aiohttp.ClientTimeout(total=20)
         self.loyalty_url = "https://apis.mytel.com.mm/loyalty/v2.0/api/pack/j4u?phoneNo={phone}"
-        self.game_profile_url = "https://pubapi-mygov2.mtgmm.co/v1/engine/user/profile"
 
     async def _make_request(self, method, url, headers=None, **kwargs):
         """Standardized async request handler with robust Gzip and JSON handling."""
@@ -30,19 +29,26 @@ class MytelProAPI:
                     status = response.status
                     content = await response.read()
                     
-                    # Handle Gzip manually if needed
+                    # Manually decompress Gzip if Content-Encoding is gzip
                     if response.headers.get("Content-Encoding") == "gzip":
                         try:
                             content = gzip.decompress(content)
                         except Exception as e:
-                            logger.error(f"Gzip decompression failed: {e}")
+                            logger.error(f"Gzip decompression failed for {url}: {e}")
                             # If decompression fails, try to proceed with raw content
 
                     try:
                         data = json.loads(content.decode("utf-8"))
                     except json.JSONDecodeError:
-                        data = {"raw_response": content.decode("utf-8", errors="ignore"), "message": "Non-JSON response or JSON decode error"}
-                        logger.warning(f"Non-JSON response or JSON decode error from {url}: {data['raw_response'][:200]}")
+                        # Attempt to decode with different encodings if utf-8 fails
+                        try:
+                            data = json.loads(content.decode("latin-1"))
+                        except json.JSONDecodeError:
+                            data = {"raw_response": content.decode("utf-8", errors="ignore"), "message": "Non-JSON response or JSON decode error"}
+                            logger.warning(f"Non-JSON response or JSON decode error from {url}: {data["raw_response"][:200]}")
+                        except Exception as e:
+                            data = {"raw_response": content.decode("utf-8", errors="ignore"), "message": f"Content decode error: {e}"}
+                            logger.error(f"Content decode error from {url}: {e}")
                     except Exception as e:
                         data = {"raw_response": content.decode("utf-8", errors="ignore"), "message": f"Content decode error: {e}"}
                         logger.error(f"Content decode error from {url}: {e}")
@@ -100,8 +106,3 @@ class MytelProAPI:
             balance_res["points"] = points
             return balance_res
         return balance_res
-
-    async def claim_game_turns(self, token):
-        """🎮 Daily Free Turns Claim (Hit Game Profile API)."""
-        headers = {**self.headers, "Authorization": f"Bearer {token}"}
-        return await self._make_request("GET", self.game_profile_url, headers=headers)

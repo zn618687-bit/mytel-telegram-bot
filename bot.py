@@ -2,7 +2,6 @@ import logging
 import re
 import os
 import asyncio
-from flask import Flask
 import threading
 import json
 
@@ -15,17 +14,6 @@ from database import init_db, add_user, add_account, get_accounts, delete_accoun
 from mytel_api import MytelProAPI
 from keyboards import login_method_keyboard, back_to_main_menu_keyboard, account_list_keyboard, account_management_keyboard, cancel_keyboard
 from messages import MESSAGES
-
-# --- Render/Keep-Alive Flask App ---
-app = Flask(__name__)
-
-@app.route("/")
-def home():
-    return "⚡ Mytel VIP Premium Bot is Online!"
-
-def run_flask():
-    port = int(os.environ.get("PORT", 8080))
-    app.run(host=\'0.0.0.0\', port=port)
 
 # Enable logging
 logging.basicConfig(
@@ -66,7 +54,6 @@ def format_balance_vip(phone, api_data, points="0"):
             f"💰 <b>MAIN:</b> {main:,} MMK\n"
             f"🎁 <b>PROMO:</b> {promo:,} MMK\n"
             f"📞 <b>VOICE:</b> {voice:,} min\n"
-            f"🌐 <b>DATA:</b> {data_amt:,} MB\n"
             f"💎 <b>POINTS:</b> {points}\n"
             f"━━━━━━━━━━━━━━━━━━━━\n"
             f"🛡️ <b>TOTAL:</b> <u>{total:,} MMK</u>"
@@ -86,7 +73,6 @@ async def get_vip_main_menu_keyboard(user_id):
     if accounts:
         keyboard.append([InlineKeyboardButton("📊 လက်ကျန်ကြည့်မည်", callback_data="interactive_balance_check")])
         keyboard.append([InlineKeyboardButton("👥 အကောင့်များကြည့်မည်", callback_data="manage_accounts")])
-        keyboard.append([InlineKeyboardButton("🎮 Claim All Free Turns", callback_data="claim_all_free_turns")])
     return InlineKeyboardMarkup(keyboard)
 
 # --- Handlers ---
@@ -294,8 +280,7 @@ async def manage_accounts_list(update: Update, context) -> None:
         await query.edit_message_text(format_vip_msg("❌ <b>အကောင့်မရှိသေးပါ။</b>\n\nကျေးဇူးပြု၍ အကောင့်အရင်ထည့်ပေးပါခင်ဗျာ။", "⚠️"), parse_mode=ParseMode.HTML, reply_markup=keyboard)
         return
     
-    # Add Claim All Free Turns button at the top
-    keyboard_buttons = [[InlineKeyboardButton("🎮 Claim All Free Turns", callback_data="claim_all_free_turns")]]
+    keyboard_buttons = []
     for acc_id, phone, alias, _ in accounts:
         display_name = alias if alias else phone
         keyboard_buttons.append([InlineKeyboardButton(f"👤 {display_name}", callback_data=f"select_account_{acc_id}")])
@@ -311,7 +296,7 @@ async def select_account_to_manage(update: Update, context) -> None:
     query = update.callback_query
     await query.answer()
     user_id = query.from_user.id
-    account_id = int(query.data.split(\'_\')[-1])
+    account_id = int(query.data.split(\"_\")[-1])
     account = await get_account_by_id(account_id, user_id)
     if not account:
         await query.edit_message_text(format_vip_msg("❌ အကောင့် ရှာမတွေ့ပါ။", "⚠️"), parse_mode=ParseMode.HTML, reply_markup=back_to_main_menu_keyboard())
@@ -319,11 +304,10 @@ async def select_account_to_manage(update: Update, context) -> None:
     _, phone, alias, _ = account
     display_name = alias if alias else phone
     
-    # Sub-Menu: Balance, Token, Claim Turn, Delete
+    # Sub-Menu: Balance, Token, Delete
     keyboard = [
         [InlineKeyboardButton("📊 လက်ကျန်ကြည့်မည်", callback_data=f"vip_balance_{account_id}")],
         [InlineKeyboardButton("🔑 Token ကြည့်မည်", callback_data=f"vip_token_{account_id}")],
-        [InlineKeyboardButton("🎮 Claim Free Turns", callback_data=f"vip_claim_{account_id}")],
         [InlineKeyboardButton("🗑️ အကောင့်ဖျက်မည်", callback_data=f"delete_account_{account_id}")],
         [InlineKeyboardButton("⬅️ Back to Account List", callback_data="manage_accounts")]
     ]
@@ -337,7 +321,7 @@ async def check_balance_from_manage(update: Update, context) -> None:
     query = update.callback_query
     await query.answer()
     user_id = query.from_user.id
-    account_id = int(query.data.split(\'_\')[-1])
+    account_id = int(query.data.split(\"_\")[-1])
     account = await get_account_by_id(account_id, user_id)
     if not account: return
     _, phone, alias, token = account
@@ -352,70 +336,11 @@ async def check_balance_from_manage(update: Update, context) -> None:
         keyboard = [[InlineKeyboardButton("⬅️ Back to Account Management", callback_data=f"select_account_{account_id}")]]
         await query.edit_message_text(format_vip_msg(f"❌ <b>Error:</b> {response["message"]}", "⚠️"), parse_mode=ParseMode.HTML, reply_markup=InlineKeyboardMarkup(keyboard))
 
-async def claim_turn_vip(update: Update, context) -> None:
-    query = update.callback_query
-    await query.answer()
-    user_id = query.from_user.id
-    account_id = int(query.data.split(\'_\')[-1])
-    account = await get_account_by_id(account_id, user_id)
-    if not account: return
-    _, phone, alias, token = account
-    await query.edit_message_text("🎮 <i>Triggering Game Engine... Claiming Free Turns.</i>", parse_mode=ParseMode.HTML)
-    response = await api.claim_game_turns(token)
-    keyboard = [[InlineKeyboardButton("⬅️ Back to Account Management", callback_data=f"select_account_{account_id}")]]
-    if response["status"] == "success":
-        # Check for specific success messages from Mytel API for game claim
-        if response["data"].get("code") == "0" or response["data"].get("status") == 200:
-            await query.edit_message_text(format_vip_msg(f"✅ <b>Claim အောင်မြင်ပါသည်!</b>\n\nအကောင့် <b>{alias if alias else phone}</b> အတွက် နေ့စဉ်ဂိမ်းအလှည့် (၂) ကြိမ်ကို Claim ပြီးပါပြီ။", "🎮"), parse_mode=ParseMode.HTML, reply_markup=InlineKeyboardMarkup(keyboard))
-        else:
-            await query.edit_message_text(format_vip_msg(f"⚠️ <b>Claim မအောင်မြင်ပါ။</b>\n\n(Message: {response["data"].get("message", "Unknown")})", "⚠️"), parse_mode=ParseMode.HTML, reply_markup=InlineKeyboardMarkup(keyboard))
-    else:
-        await query.edit_message_text(format_vip_msg(f"❌ <b>Claim မအောင်မြင်ပါ။</b>\n\n(Error: {response["message"]})", "⚠️"), parse_mode=ParseMode.HTML, reply_markup=InlineKeyboardMarkup(keyboard))
-
-async def claim_all_free_turns(update: Update, context) -> None:
-    query = update.callback_query
-    await query.answer()
-    user_id = query.from_user.id
-    accounts = await get_accounts(user_id)
-    if not accounts:
-        keyboard = await get_vip_main_menu_keyboard(user_id)
-        await query.edit_message_text(format_vip_msg("❌ <b>အကောင့်မရှိသေးပါ။</b>\n\nကျေးဇူးပြု၍ အကောင့်အရင်ထည့်ပေးပါခင်ဗျာ။", "⚠️"), parse_mode=ParseMode.HTML, reply_markup=keyboard)
-        return
-    
-    loading_msg = await query.edit_message_text("🎮 <i>Claiming Free Turns for all VIP Accounts...</i>", parse_mode=ParseMode.HTML)
-    
-    success_count = 0
-    fail_count = 0
-    results = []
-
-    for acc_id, phone, alias, token in accounts:
-        display_name = alias if alias else phone
-        response = await api.claim_game_turns(token)
-        if response["status"] == "success" and (response["data"].get("code") == "0" or response["data"].get("status") == 200):
-            success_count += 1
-            results.append(f"✅ <b>{display_name}:</b> Claimed!")
-        else:
-            fail_count += 1
-            results.append(f"❌ <b>{display_name}:</b> Failed ({response["message"]})")
-        await asyncio.sleep(0.5) # Small delay to avoid overwhelming API
-
-    summary_msg = (
-        f"🎮 <b>CLAIM ALL FREE TURNS SUMMARY</b>\n"
-        f"━━━━━━━━━━━━━━━━━━━━\n"
-        f"✅ Success: {success_count}\n"
-        f"❌ Failed: {fail_count}\n"
-        f"\n" + "\n".join(results) + "\n"
-        f"━━━━━━━━━━━━━━━━━━━━\n"
-        f"🛡️ <i>Operation Complete.</i>"
-    )
-    keyboard = await get_vip_main_menu_keyboard(user_id)
-    await loading_msg.edit_text(format_vip_msg(summary_msg, "🎮"), parse_mode=ParseMode.HTML, reply_markup=keyboard)
-
 async def view_token_vip(update: Update, context) -> None:
     query = update.callback_query
     await query.answer()
     user_id = query.from_user.id
-    account_id = int(query.data.split(\'_\')[-1])
+    account_id = int(query.data.split(\"_\")[-1])
     account = await get_account_by_id(account_id, user_id)
     if not account: return
     _, phone, alias, token = account
@@ -433,7 +358,6 @@ async def view_token_vip(update: Update, context) -> None:
         keyboard = [
             [InlineKeyboardButton("📊 လက်ကျန်ကြည့်မည်", callback_data=f"vip_balance_{account_id}")],
             [InlineKeyboardButton("🔑 Token ကြည့်မည်", callback_data=f"vip_token_{account_id}")],
-            [InlineKeyboardButton("🎮 Claim Free Turns", callback_data=f"vip_claim_{account_id}")],
             [InlineKeyboardButton("🗑️ အကောင့်ဖျက်မည်", callback_data=f"delete_account_{account_id}")],
             [InlineKeyboardButton("⬅️ Back to Account Management", callback_data="manage_accounts")]
         ]
@@ -448,7 +372,7 @@ async def delete_account_confirm(update: Update, context) -> None:
     query = update.callback_query
     await query.answer()
     user_id = query.from_user.id
-    account_id = int(query.data.split(\'_\')[-1])
+    account_id = int(query.data.split(\"_\")[-1])
     await delete_account(account_id, user_id)
     keyboard = await get_vip_main_menu_keyboard(user_id)
     await query.edit_message_text(format_vip_msg("🗑️ <b>အကောင့်ကို စနစ်တကျ ဖျက်ပြီးပါပြီ။</b>", "✅"), parse_mode=ParseMode.HTML, reply_markup=keyboard)
@@ -478,11 +402,7 @@ async def unknown_message(update: Update, context) -> None:
         await update.message.reply_html(format_vip_msg("<b>VIP MAIN MENU</b>", "⚡"), reply_markup=keyboard)
 
 def main() -> None:
-    # Run Flask app in a separate thread
-    flask_thread = threading.Thread(target=run_flask, daemon=True)
-    flask_thread.start()
-
-    # Initialize DB and run Telegram Bot
+    # Initialize DB
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
     loop.run_until_complete(init_db())
@@ -502,8 +422,6 @@ def main() -> None:
     application.add_handler(CallbackQueryHandler(interactive_balance_check, pattern="^interactive_balance_check$")) # Interactive balance list
     application.add_handler(CallbackQueryHandler(check_single_balance, pattern="^check_single_balance_\\d+$")) # Single balance from interactive list
     application.add_handler(CallbackQueryHandler(view_token_vip, pattern="^vip_token_\\d+$"))
-    application.add_handler(CallbackQueryHandler(claim_turn_vip, pattern="^vip_claim_\\d+$"))
-    application.add_handler(CallbackQueryHandler(claim_all_free_turns, pattern="^claim_all_free_turns$"))
     application.add_handler(CallbackQueryHandler(delete_account_confirm, pattern="^delete_account_\\d+$"))
     application.add_handler(CallbackQueryHandler(cancel_operation, pattern="^cancel$"))
 
