@@ -31,22 +31,27 @@ class MytelProAPI:
                     content = await response.read()
                     
                     # Handle Gzip manually if needed
-                    if response.headers.get('Content-Encoding') == 'gzip':
+                    if response.headers.get("Content-Encoding") == "gzip":
                         try:
                             content = gzip.decompress(content)
                         except Exception as e:
                             logger.error(f"Gzip decompression failed: {e}")
+                            # If decompression fails, try to proceed with raw content
 
                     try:
-                        data = json.loads(content.decode('utf-8'))
-                    except:
-                        data = content.decode('utf-8', errors='ignore')
+                        data = json.loads(content.decode("utf-8"))
+                    except json.JSONDecodeError:
+                        data = {"raw_response": content.decode("utf-8", errors="ignore"), "message": "Non-JSON response or JSON decode error"}
+                        logger.warning(f"Non-JSON response or JSON decode error from {url}: {data['raw_response'][:200]}")
+                    except Exception as e:
+                        data = {"raw_response": content.decode("utf-8", errors="ignore"), "message": f"Content decode error: {e}"}
+                        logger.error(f"Content decode error from {url}: {e}")
 
                     if status == 200:
                         if isinstance(data, dict):
                             # Mytel uses errorCode or code
                             err_code = data.get("errorCode") if data.get("errorCode") is not None else data.get("code")
-                            if err_code in [0, 200, "0", "200"]:
+                            if err_code in [0, 200, "0", "200"] or (err_code is None and data.get("result") is not None):
                                 return {"status": "success", "message": "OK", "data": data}
                             return {"status": "error", "message": data.get("message") or data.get("desc") or "API Error", "data": data}
                         return {"status": "success", "message": "OK", "data": data}
@@ -56,6 +61,9 @@ class MytelProAPI:
                         return {"status": "error", "message": f"Server Error ({status})", "data": data}
         except asyncio.TimeoutError:
             return {"status": "error", "message": "Network Timeout", "data": None}
+        except aiohttp.ClientError as e:
+            logger.error(f"AIOHTTP Client Error at {url}: {e}")
+            return {"status": "error", "message": "Network Request Failed", "data": str(e)}
         except Exception as e:
             logger.error(f"API Exception at {url}: {e}")
             return {"status": "error", "message": "Connection Failed", "data": str(e)}
