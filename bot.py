@@ -147,7 +147,7 @@ async def handle_message(update: Update, context):
             )
         else:
             await update.effective_message.reply_html(
-                f"❌ <b>OTP တောင်းဆို၍ မရပါ</b>\n\n<i>{res['message']}</i>"
+                f"❌ <b>OTP တောင်းဆို၍ မရပါ</b>\n\n<i>{res["message"]}</i>"
             )
             del user_states[user_id]
 
@@ -165,59 +165,47 @@ async def handle_message(update: Update, context):
 
         if res["status"] == "success":
             access_token = res["data"]["result"]["accessToken"]
-            user_states[user_id]["access_token"] = access_token
-            user_states[user_id]["state"] = "waiting_account_name"
+            # Automatically use phone_number as account_name
+            account_name = phone_number
+            await add_account(user_id, phone_number, access_token, account_name)
             await update.effective_message.reply_html(
-                "✅ <b>Login အောင်မြင်ပါပြီ။</b>\n\n<i>ဒီအကောင့်အတွက် မှတ်မိလွယ်တဲ့ နာမည်တစ်ခု ပေးပါ။ (ဥပမာ: အဖေ့ဖုန်း၊ ကိုယ့်ဖုန်း)</i>"
+                f"✅ <b>{account_name} အကောင့်ကို အောင်မြင်စွာ ထည့်သွင်းပြီးပါပြီ။</b>"
             )
+            del user_states[user_id]
+            await start(update, context) # Show updated start menu
         else:
             await update.effective_message.reply_html(
-                f"❌ <b>OTP မမှန်ကန်ပါ သို့မဟုတ် သက်တမ်းကုန်နေပါပြီ။</b>\n\n<i>{res['message']}</i>"
+                f"❌ <b>OTP မမှန်ကန်ပါ သို့မဟုတ် သက်တမ်းကုန်နေပါပြီ။</b>\n\n<i>{res["message"]}</i>"
             )
             del user_states[user_id]
 
     elif current_state == "waiting_token":
         access_token = text.strip()
-        user_states[user_id]["access_token"] = access_token
-        user_states[user_id]["state"] = "waiting_account_name_token"
-        await update.effective_message.reply_html(
-            "✅ <b>Token လက်ခံရရှိပါပြီ။</b>\n\n<i>ဒီအကောင့်အတွက် မှတ်မိလွယ်တဲ့ နာမည်တစ်ခု ပေးပါ။ (ဥပမာ: အဖေ့ဖုန်း၊ ကိုယ့်ဖုန်း)</i>"
-        )
+        # Try to get phone number from token
+        loading_msg = await send_loading_message(update, context, "📡 <i>Token မှ ဖုန်းနံပါတ် ရယူနေပါသည်...</i>")
+        balance_res = await api.get_balance(access_token, "09xxxxxxxxx") # Dummy phone for initial balance check
+        await delete_loading_message(loading_msg)
 
-    elif current_state == "waiting_account_name" or current_state == "waiting_account_name_token":
-        account_name = text.strip()
-        phone_number = state_info.get("phone_number")
-        access_token = state_info.get("access_token")
-
-        if not access_token:
-            await update.effective_message.reply_html("⚠️ <b>အမှားအယွင်းတစ်ခုခု ဖြစ်သွားပါပြီ။</b>\n\n<i>ပြန်လည်စတင်ရန် /start ကို နှိပ်ပါ။</i>")
-            del user_states[user_id]
-            return
-        
-        # If login via token, we need to get the phone number from the balance API
-        if current_state == "waiting_account_name_token" and not phone_number:
-            loading_msg = await send_loading_message(update, context, "📡 <i>ဖုန်းနံပါတ် ရယူနေပါသည်...</i>")
-            balance_res = await api.get_balance(access_token, "09xxxxxxxxx") # Phone number is not critical here, just to get a response
-            await delete_loading_message(loading_msg)
-            if balance_res["status"] == "success" and balance_res["data"] and balance_res["data"].get("result"):
-                phone_number = balance_res["data"]["result"].get("isdn")
-                if not phone_number:
-                    await update.effective_message.reply_html("❌ <b>ဖုန်းနံပါတ် ရယူ၍ မရပါ</b>\n\n<i>Token မမှန်ကန်ခြင်း သို့မဟုတ် အခြားအမှားအယွင်း ဖြစ်နိုင်ပါသည်။</i>")
-                    del user_states[user_id]
-                    return
-            else:
-                await update.effective_message.reply_html(
-                    f"❌ <b>ဖုန်းနံပါတ် ရယူ၍ မရပါ</b>\n\n<i>{balance_res.get('message', 'Token မမှန်ကန်ခြင်း သို့မဟုတ် အခြားအမှားအယွင်း ဖြစ်နိုင်ပါသည်။')}</i>"
-                )
+        if balance_res["status"] == "success" and balance_res["data"] and balance_res["data"].get("result"):
+            phone_number = balance_res["data"]["result"].get("isdn")
+            if not phone_number:
+                await update.effective_message.reply_html("❌ <b>ဖုန်းနံပါတ် ရယူ၍ မရပါ</b>\n\n<i>Token မမှန်ကန်ခြင်း သို့မဟုတ် အခြားအမှားအယွင်း ဖြစ်နိုင်ပါသည်။</i>")
                 del user_states[user_id]
                 return
-
-        await add_account(user_id, phone_number, access_token, account_name)
-        await update.effective_message.reply_html(
-            f"✅ <b>{account_name} အကောင့်ကို အောင်မြင်စွာ ထည့်သွင်းပြီးပါပြီ။</b>"
-        )
-        del user_states[user_id]
-        await start(update, context) # Show updated start menu
+            
+            # Automatically use phone_number as account_name
+            account_name = phone_number
+            await add_account(user_id, phone_number, access_token, account_name)
+            await update.effective_message.reply_html(
+                f"✅ <b>{account_name} အကောင့်ကို အောင်မြင်စွာ ထည့်သွင်းပြီးပါပြီ။</b>"
+            )
+            del user_states[user_id]
+            await start(update, context) # Show updated start menu
+        else:
+            await update.effective_message.reply_html(
+                f"❌ <b>Token မမှန်ကန်ပါ သို့မဟုတ် ဖုန်းနံပါတ် ရယူ၍ မရပါ</b>\n\n<i>{balance_res.get("message", "Token မမှန်ကန်ခြင်း သို့မဟုတ် အခြားအမှားအယွင်း ဖြစ်နိုင်ပါသည်။")}</i>"
+            )
+            del user_states[user_id]
 
     else:
         await update.effective_message.reply_html("<i>အမှားအယွင်းတစ်ခုခု ဖြစ်သွားပါပြီ။</i>\n\n<i>ပြန်လည်စတင်ရန် /start ကို နှိပ်ပါ။</i>", parse_mode="HTML")
@@ -241,7 +229,7 @@ async def handle_callback_query(update: Update, context):
         
         keyboard = []
         for acc in accounts:
-            keyboard.append([InlineKeyboardButton(f"👤 {acc['name']} ({acc['phone_number'][-4:]})", callback_data=f"select_balance_{acc['phone_number']}")])
+            keyboard.append([InlineKeyboardButton(f"👤 {acc["name"]} ({acc["phone_number"][-4:]})", callback_data=f"select_balance_{acc["phone_number"]}")])
         keyboard.append([InlineKeyboardButton("⬅️ နောက်သို့", callback_data="start_menu")])
         
         await query.edit_message_text(
@@ -263,12 +251,12 @@ async def handle_callback_query(update: Update, context):
 
         if res["status"] == "success" and res["data"] and res["data"].get("result"):
             balance_data = res["data"]["result"]
-            main_balance = f"{float(balance_data.get('mainBalance', 0)):,.0f}"
-            data_balance = f"{float(balance_data.get('dataBalance', 0)) / (1024*1024):,.2f}" if balance_data.get('dataBalance') else "0"
+            main_balance = f"{float(balance_data.get(\'mainBalance\', 0)):,.0f}"
+            data_balance = f"{float(balance_data.get(\'dataBalance\', 0)) / (1024*1024):,.2f}" if balance_data.get(\'dataBalance\') else "0"
             loyalty_points = balance_data.get("loyalty_points", "0")
 
             message = (
-                f"💎 <b>{account['name']} ({phone_number})</b>\n\n"
+                f"💎 <b>{account["name"]} ({phone_number})</b>\n\n"
                 f"💰 Main: <code>{main_balance}</code> MMK\n"
                 f"🌐 Data: <code>{data_balance}</code> MB\n"
                 f"🎁 Points: <code>{loyalty_points}</code>"
@@ -292,7 +280,7 @@ async def handle_callback_query(update: Update, context):
         
         keyboard = []
         for acc in accounts:
-            keyboard.append([InlineKeyboardButton(f"👤 {acc['name']} ({acc['phone_number']})", callback_data=f"manage_{acc['phone_number']}")])
+            keyboard.append([InlineKeyboardButton(f"👤 {acc["name"]} ({acc["phone_number"]})", callback_data=f"manage_{acc["phone_number"]}")])
         keyboard.append([InlineKeyboardButton("⬅️ နောက်သို့", callback_data="start_menu")])
 
         await query.edit_message_text(
@@ -309,7 +297,7 @@ async def handle_callback_query(update: Update, context):
             return
         
         await query.edit_message_text(
-            f"👤 <b>{account['name']} ({phone_number})</b>\n\n<i>လုပ်ဆောင်ချက် ရွေးချယ်ပါ။</i>",
+            f"👤 <b>{account["name"]} ({phone_number})</b>\n\n<i>လုပ်ဆောင်ချက် ရွေးချယ်ပါ။</i>",
             reply_markup=get_account_manage_keyboard(phone_number),
             parse_mode="HTML"
         )
@@ -322,12 +310,12 @@ async def handle_callback_query(update: Update, context):
             return
         
         token_message = await query.edit_message_text(
-            f"🔑 <b>{account['name']} ({phone_number}) Token</b>\n\n<code>{account['access_token']}</code>\n\n<i>(၅ စက္ကန့်အတွင်း အလိုအလျောက် ဖျောက်ပါမည်)</i>",
+            f"🔑 <b>{account["name"]} ({phone_number}) Token</b>\n\n<code>{account["access_token"]}</code>\n\n<i>(၅ စက္ကန့်အတွင်း အလိုအလျောက် ဖျောက်ပါမည်)</i>",
             parse_mode="HTML"
         )
         await asyncio.sleep(5)
         await token_message.edit_text(
-            f"👤 <b>{account['name']} ({phone_number})</b>\n\n<i>လုပ်ဆောင်ချက် ရွေးချယ်ပါ။</i>",
+            f"👤 <b>{account["name"]} ({phone_number})</b>\n\n<i>လုပ်ဆောင်ချက် ရွေးချယ်ပါ။</i>",
             reply_markup=get_account_manage_keyboard(phone_number),
             parse_mode="HTML"
         )
@@ -341,7 +329,7 @@ async def handle_callback_query(update: Update, context):
         
         await delete_account(user_id, phone_number)
         await query.edit_message_text(
-            f"🗑️ <b>{account['name']} ({phone_number}) အကောင့်ကို ဖျက်ပြီးပါပြီ။</b>",
+            f"🗑️ <b>{account["name"]} ({phone_number}) အကောင့်ကို ဖျက်ပြီးပါပြီ။</b>",
             parse_mode="HTML"
         )
         await start(update, context) # Refresh start menu
